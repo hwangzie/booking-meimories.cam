@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Camera, GraduationCap, Users, Sparkles, Heart, CalendarDays, Clock,
   ChevronLeft, ChevronRight, Check, Lock, Unlock, Instagram, MessageCircle,
-  X, Star, Pin, ScrollText, PartyPopper, Loader2, MapPin, Landmark, Upload, Copy, ImageOff, Wallet, CircleDollarSign
+  X, Star, Pin, ScrollText, PartyPopper, Loader2, MapPin, Landmark, Upload, Copy, ImageOff, Wallet, CircleDollarSign, Trash2
 } from 'lucide-react';
 
 /* ---------------------------------------------------------------
@@ -549,7 +549,10 @@ async function uploadPaymentProof(file) {
 
 // Simpan booking baru ke tabel `bookings`
 async function insertBooking(booking) {
-  const { data, error } = await supabase
+  const bookingId = 'BK-' + Date.now().toString(36).toUpperCase();
+  const createdAt = new Date().toISOString();
+
+  const { error } = await supabase
     .from('bookings')
     .insert([{
       date: booking.date,
@@ -567,10 +570,10 @@ async function insertBooking(booking) {
       notes: booking.notes,
       payment_proof_url: booking.paymentProofUrl || null,
       payment_proof_name: booking.paymentProofName || null,
-    }])
-    .select();
+    }]);
+
   if (error) throw error;
-  return data[0];
+  return { id: bookingId, created_at: createdAt };
 }
 
 // Ambil semua booking untuk tab admin "Jadwal & Pengingat"
@@ -770,7 +773,12 @@ function Booking() {
       // Upload bukti transfer ke Supabase Storage dulu (kalau ada)
       let paymentProofUrl = null;
       if (paymentProof && paymentProof.file) {
-        paymentProofUrl = await uploadPaymentProof(paymentProof.file);
+        try {
+          paymentProofUrl = await uploadPaymentProof(paymentProof.file);
+        } catch (uploadErr) {
+          console.warn('Upload bukti gagal, booking tetap disimpan tanpa foto:', uploadErr);
+          // Booking tetap lanjut meski foto gagal upload
+        }
       }
 
       const bookingDraft = {
@@ -1185,13 +1193,33 @@ function JadwalAdmin() {
     if (session) fetchBookings();
   }, [session, fetchBookings]);
 
+  const handleCancelBooking = async (id, name, date, time) => {
+    const confirmCancel = window.confirm(`Apakah Anda yakin ingin membatalkan/menghapus booking untuk ${name} pada ${formatDateID(date)} jam ${time}?`);
+    if (!confirmCancel) return;
+
+    try {
+      const { error } = await supabase.from('bookings').delete().eq('id', id);
+      if (error) {
+        alert('Gagal membatalkan booking: ' + error.message);
+      } else {
+        alert('Booking berhasil dibatalkan dan dihapus.');
+        fetchBookings();
+      }
+    } catch (err) {
+      alert('Terjadi kesalahan: ' + err.message);
+    }
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setAuthError('');
     setAuthLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setAuthLoading(false);
-    if (error) setAuthError('Email atau password salah.');
+    if (error) {
+      console.error('Login error:', error);
+      setAuthError(error.message === 'Invalid login credentials' ? 'Email atau password salah.' : (error.message || 'Gagal login.'));
+    }
   };
 
   const handleLogout = async () => {
@@ -1302,6 +1330,14 @@ function JadwalAdmin() {
                   <p><b>{b.name}</b></p>
                   <p className="text-xs text-[#a3748a]">{b.wa}</p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => handleCancelBooking(b.id, b.name, b.date, b.time)}
+                  className="p-2 text-rose-500 hover:bg-rose-50 rounded-full transition-colors ml-auto sm:ml-0"
+                  title="Batalkan Booking"
+                >
+                  <Trash2 size={18} />
+                </button>
                 {b.lokasi && <p className="text-xs text-[#7a3c50] w-full sm:w-auto flex items-center gap-1"><MapPin size={12} /> {b.lokasi}</p>}
                 {b.addons && b.addons.length > 0 && (
                   <p className="text-xs text-[#7a3c50] w-full sm:w-auto">Add-on: {b.addons.join(', ')}</p>
