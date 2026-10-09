@@ -510,103 +510,30 @@ function Paket({ goTo }) {
 }
 
 /* ---------------------------------------------------------------
-   STORAGE — Supabase (database sungguhan, bukan window.storage)
-   Karena website ini akan hidup di domain sendiri (booking.meimories.cam),
-   data booking disimpan di tabel `bookings` pada Supabase, dan bukti
-   pembayaran diunggah ke Supabase Storage bucket `payment-proofs`.
-   Lihat README.md untuk cara membuat project Supabase + tabel + bucket.
+   STORAGE — MySQL & PHP REST API (menggantikan Supabase)
+   Data booking disimpan di tabel `bookings` MySQL, dan bukti
+   pembayaran diunggah ke server hosting di `/uploads/payment-proofs/`.
 --------------------------------------------------------------- */
-import { supabase } from './lib/supabase.js';
+import { api } from './lib/api.js';
 
 // Kalender publik: hanya ambil tanggal + jam + nama paket (tanpa data pribadi)
-// Query lewat view `public_slots` (bukan tabel `bookings` langsung) karena
-// tabel bookings sekarang hanya bisa dibaca lengkap oleh admin yang login.
 async function loadSharedSlots() {
-  const { data, error } = await supabase
-    .from('public_slots')
-    .select('date, time, package_name');
-  if (error) {
-    console.error('gagal ambil slot', error);
-    return {};
-  }
-  const map = {};
-  (data || []).forEach((row) => {
-    if (!map[row.date]) map[row.date] = [];
-    map[row.date].push({ time: row.time, label: row.package_name });
-  });
-  return map;
+  return await api.loadSharedSlots();
 }
 
-// Upload bukti pembayaran ke Supabase Storage, kembalikan URL publiknya
+// Upload bukti pembayaran ke server, kembalikan URL publiknya
 async function uploadPaymentProof(file) {
-  const ext = file.name.split('.').pop() || 'jpg';
-  const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  const { error: uploadError } = await supabase.storage.from('payment-proofs').upload(path, file);
-  if (uploadError) throw uploadError;
-  const { data } = supabase.storage.from('payment-proofs').getPublicUrl(path);
-  return data.publicUrl;
+  return await api.uploadPaymentProof(file);
 }
 
-// Simpan booking baru ke tabel `bookings`
+// Simpan booking baru ke database
 async function insertBooking(booking) {
-  const bookingId = 'BK-' + Date.now().toString(36).toUpperCase();
-  const createdAt = new Date().toISOString();
-
-  const { error } = await supabase
-    .from('bookings')
-    .insert([{
-      date: booking.date,
-      time: booking.time,
-      category: booking.category,
-      package_name: booking.packageName,
-      addons: booking.addons,
-      total: booking.total,
-      payment_type: booking.paymentType,
-      amount_to_pay: booking.amountToPay,
-      sisa_bayar: booking.sisaBayar,
-      name: booking.name,
-      wa: booking.wa,
-      lokasi: booking.lokasi,
-      notes: booking.notes,
-      payment_proof_url: booking.paymentProofUrl || null,
-      payment_proof_name: booking.paymentProofName || null,
-    }]);
-
-  if (error) throw error;
-  return { id: bookingId, created_at: createdAt };
+  return await api.insertBooking(booking);
 }
 
 // Ambil semua booking untuk tab admin "Jadwal & Pengingat"
 async function loadBookings() {
-  const { data, error } = await supabase
-    .from('bookings')
-    .select('*')
-    .order('date', { ascending: true })
-    .order('time', { ascending: true });
-  if (error) {
-    console.error('gagal ambil booking', error);
-    return [];
-  }
-  // samakan nama kolom snake_case -> camelCase supaya cocok dengan komponen di bawah
-  return (data || []).map((b) => ({
-    id: b.id,
-    date: b.date,
-    time: b.time,
-    category: b.category,
-    packageName: b.package_name,
-    addons: b.addons || [],
-    total: b.total,
-    paymentType: b.payment_type,
-    amountToPay: b.amount_to_pay,
-    sisaBayar: b.sisa_bayar,
-    name: b.name,
-    wa: b.wa,
-    lokasi: b.lokasi,
-    notes: b.notes,
-    paymentProof: b.payment_proof_url,
-    paymentProofName: b.payment_proof_name,
-    createdAt: b.created_at,
-  }));
+  return await api.loadBookings();
 }
 
 /* ---------------------------------------------------------------
@@ -770,7 +697,7 @@ function Booking() {
         if (pa) addonsText.push(`Add-on: ${pa.name}`);
       }
 
-      // Upload bukti transfer ke Supabase Storage dulu (kalau ada)
+      // Upload bukti transfer ke server dulu (kalau ada)
       let paymentProofUrl = null;
       if (paymentProof && paymentProof.file) {
         try {
@@ -1176,8 +1103,8 @@ function JadwalAdmin() {
 
   // Cek sesi login yang tersimpan (auto-login lagi kalau sebelumnya sudah pernah login)
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    api.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = api.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
     });
     return () => listener.subscription.unsubscribe();
@@ -1198,13 +1125,9 @@ function JadwalAdmin() {
     if (!confirmCancel) return;
 
     try {
-      const { error } = await supabase.from('bookings').delete().eq('id', id);
-      if (error) {
-        alert('Gagal membatalkan booking: ' + error.message);
-      } else {
-        alert('Booking berhasil dibatalkan dan dihapus.');
-        fetchBookings();
-      }
+      await api.deleteBooking(id);
+      alert('Booking berhasil dibatalkan dan dihapus.');
+      fetchBookings();
     } catch (err) {
       alert('Terjadi kesalahan: ' + err.message);
     }
@@ -1214,7 +1137,7 @@ function JadwalAdmin() {
     e.preventDefault();
     setAuthError('');
     setAuthLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    const { error } = await api.auth.signInWithPassword({ email: email.trim(), password });
     setAuthLoading(false);
     if (error) {
       console.error('Login error:', error);
@@ -1223,7 +1146,7 @@ function JadwalAdmin() {
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await api.auth.signOut();
     setBookings([]);
   };
 
@@ -1275,8 +1198,7 @@ function JadwalAdmin() {
             </button>
           </form>
           <p className="text-[11px] text-[#a3748a] mt-4">
-            Login ini pakai Supabase Auth sungguhan — akun admin dibuat lewat dashboard Supabase
-            (lihat README bagian "Bagian 5"). Data booking lengkap hanya bisa dibaca setelah login berhasil.
+            Login ini menggunakan akun admin meimories.cam. Data booking lengkap hanya bisa dibaca setelah login berhasil.
           </p>
         </div>
       </section>
